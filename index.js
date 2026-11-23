@@ -16,6 +16,18 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const BUILD_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 
+// Strict allowlist for the run_script tool. Only these exact file names may be
+// executed, so a model-supplied string can never become an arbitrary command.
+const ALLOWED_SCRIPTS = Object.freeze([
+  'check_and_test.bat',
+  'build_apk.bat',
+  'backup_git.bat',
+  'project_map.bat',
+]);
+
+// Keep tool output tiny: model context is far more expensive than log loss.
+const MAX_RESULT_CHARS = 4000;
+
 // ---------------------------------------------------------------------------
 // Optional plugin-local environment (.env)
 // ---------------------------------------------------------------------------
@@ -199,6 +211,14 @@ function combineOutput(stdout, stderr) {
     .map((part) => String(part ?? '').trim())
     .filter(Boolean)
     .join('\n');
+}
+
+// Return the trimmed tail of `value`, capped at `limit` characters. The head is
+// dropped because the end of a build/test log carries the actionable result.
+function tailText(value, limit = MAX_RESULT_CHARS) {
+  const text = String(value ?? '').trim();
+  if (text.length <= limit) return text;
+  return `...[truncated, last ${limit} chars]\n${text.slice(-limit)}`;
 }
 
 // Spawn a process, capture its output and enforce a timeout. Never throws.
@@ -651,6 +671,65 @@ export function apply(ctx, _config) {
 
       const sizeMb = (fs.statSync(target).size / (1024 * 1024)).toFixed(1);
       return `APK built and copied to ${target} (${sizeMb} MB).\n\n${build.output}`;
+    },
+  });
+
+  // Run one of the project's own helper scripts. The script name is checked
+  // against a strict allowlist, so this can never become arbitrary execution.
+  ctx.tools.register({
+    name: 'run_script',
+    description: 'Run an allowlisted project helper .bat script from the Flutter project root and return the tail of its output.',
+    parameters: {
+      type: 'object',
+      properties: {
+        scriptName: {
+          type: 'string',
+          description: 'Exact script file name, one of: check_and_test.bat, build_apk.bat, backup_git.bat, project_map.bat',
+          enum: [...ALLOWED_SCRIPTS],
+        },
+      },
+      required: ['scriptName'],
+      additionalProperties: false,
+    },
+    output: textOutput,
+    execute: async ({ scriptName } = {}) => {
+      const raw = typeof scriptName === 'string' ? scriptName.trim() : '';
+      if (!raw) {
+        return `Error: scriptName is required. Allowed: ${ALLOWED_SCRIPTS.join(', ')}.`;
+      }
+
+      // Exact, case-sensitive membership check against the frozen allowlist.
+      if (!ALLOWED_SCRIPTS.includes(raw)) {
+        return `Error: "${raw}" is not an allowed script. Allowed: ${ALLOWED_SCRIPTS.join(', ')}.`;
+      }
+
+      const root = findRoot(undefined, [PUBSPEC]);
+      if (!root) {
+        return 'Error: no pubspec.yaml found upwards from the current directory.';
+      }
+
+      const scriptPath = path.join(root, raw);
+      if (!isFile(scriptPath)) {
+        return `Error: script not found: ${displayPath(scriptPath, root)} (project root: ${root}).`;
+      }
+
+      // cmd.exe resolves the bare, allowlisted file name against the child cwd,
+      // so no user-controlled path ever reaches the command line.
+      const run = await runProcess(
+        process.env.ComSpec || 'cmd.exe',
+        ['/d', '/c', raw],
+        {
+          cwd: root,
+          env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+          timeout: DEFAULT_TIMEOUT_MS,
+        },
+      );
+
+      const body = tailText(run.output);
+      if (!run.ok) {
+        return `Script ${raw} failed in ${root}.\n\n${body}`;
+      }
+      return `Script ${raw} finished in ${root}.\n\n${body}`;
     },
   });
 
