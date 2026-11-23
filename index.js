@@ -23,6 +23,12 @@ const ALLOWED_SCRIPTS = Object.freeze([
   'build_apk.bat',
   'backup_git.bat',
   'project_map.bat',
+  'symbols_map.bat',
+  'fast_check.bat',
+  'git_diff_summary.bat',
+  'context_pack.bat',
+  'autofix.bat',
+  'release_all.bat',
 ]);
 
 // Keep tool output tiny: model context is far more expensive than log loss.
@@ -684,7 +690,7 @@ export function apply(ctx, _config) {
       properties: {
         scriptName: {
           type: 'string',
-          description: 'Exact script file name, one of: check_and_test.bat, build_apk.bat, backup_git.bat, project_map.bat',
+          description: 'Exact script file name, one of: check_and_test.bat, build_apk.bat, backup_git.bat, project_map.bat, symbols_map.bat, fast_check.bat, git_diff_summary.bat, context_pack.bat, autofix.bat, release_all.bat',
           enum: [...ALLOWED_SCRIPTS],
         },
       },

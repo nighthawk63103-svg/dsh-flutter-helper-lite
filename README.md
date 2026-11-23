@@ -23,7 +23,7 @@ Repository: https://github.com
 * **`git_undo`** — reverts uncommitted changes (all tracked changes, or only the given path) if an edit breaks compilation.
 * **`git_push`** — pushes the current branch to `origin` (reads `GITHUB_TOKEN` from a local `.env` file via a secure Git credential helper; without it, falls back to normal Git credentials).
 * **`flutter_build_apk`** — builds a release Android APK (`flutter build apk --release`) and copies it to the requested path (requires Android SDK & JDK 17).
-* **`run_script`** — safely executes allowlisted local `.bat` helper scripts (`check_and_test.bat`, `build_apk.bat`, `backup_git.bat`, `project_map.bat`) in the project root via `cmd.exe` (non-interactive `stdin` prevents hangs on `pause`, and output is trimmed to the last 4,000 characters to save tokens).
+* **`run_script`** — safely executes allowlisted local `.bat` helper scripts (`check_and_test.bat`, `build_apk.bat`, `backup_git.bat`, `project_map.bat`, `symbols_map.bat`, `fast_check.bat`, `git_diff_summary.bat`) in the project root via `cmd.exe` (non-interactive `stdin` prevents hangs on `pause`, and output is trimmed to the last 4,000 characters to save tokens).
 
 Paths are resolved from the nearest parent directory containing `pubspec.yaml` (Flutter tools / scripts) or `.git` (Git tools), so tools work regardless of the host process working directory.
 
@@ -35,6 +35,9 @@ You can place these `.bat` scripts in your Flutter project root so the AI agent 
 * **`build_apk.bat`** — runs `flutter analyze`, builds `app-release.apk`, and copies it to `build\mindmap_app.apk`.
 * **`backup_git.bat`** — stages all changes, commits with a timestamp, and pushes to `origin`.
 * **`project_map.bat`** — lists all `lib\*.dart` files with line counts so the model can map the project without multiple directory scans.
+* **`symbols_map.bat`** — prints a token-cheap class/method map of every `lib\*.dart` file (`class`, `enum`, `mixin`, `extension`, `void`, `Future<`, `State<`, `Widget`, fields with line numbers) via PowerShell `Select-String`, so the model sees declarations without reading whole files.
+* **`fast_check.bat`** — quick gate before a commit: `dart format lib` followed by `flutter analyze --no-pub` (skips the package resolution step, so it is faster and works offline).
+* **`git_diff_summary.bat`** — compact change overview: short `git status -s` plus `git diff --stat`, so the model knows what changed without dumping full diffs into the context.
 
 ## Installation
 
@@ -73,7 +76,7 @@ MIT License
 * **`git_undo`** — откатывает незакоммиченные изменения (все отслеживаемые или только указанный путь), если правка сломала сборку.
 * **`git_push`** — отправляет текущую ветку в `origin` (читает `GITHUB_TOKEN` из локального файла `.env` через безопасный credential-helper; без него используются обычные учётные данные Git).
 * **`flutter_build_apk`** — собирает release-APK (`flutter build apk --release`) и копирует его по указанному пути (требуются Android SDK и JDK 17).
-* **`run_script`** — безопасно запускает разрешённые `.bat`-скрипты из корня проекта (`check_and_test.bat`, `build_apk.bat`, `backup_git.bat`, `project_map.bat`) через `cmd.exe` с закрытым потоком ввода (не зависает на `pause`) и обрезкой вывода до последних 4000 символов.
+* **`run_script`** — безопасно запускает разрешённые `.bat`-скрипты из корня проекта (`check_and_test.bat`, `build_apk.bat`, `backup_git.bat`, `project_map.bat`, `symbols_map.bat`, `fast_check.bat`, `git_diff_summary.bat`) через `cmd.exe` с закрытым потоком ввода (не зависает на `pause`) и обрезкой вывода до последних 4000 символов.
 
 Пути определяются по ближайшей родительской папке с `pubspec.yaml` (инструменты Flutter и скрипты) или `.git` (инструменты Git), поэтому плагин работает независимо от рабочей директории хост-процесса.
 
@@ -85,6 +88,9 @@ MIT License
 * **`build_apk.bat`** — проверяет код через `flutter analyze`, собирает `app-release.apk` и копирует его в `build\mindmap_app.apk`.
 * **`backup_git.bat`** — индексирует изменения, делает коммит с текущей датой/временем и отправляет в `origin`.
 * **`project_map.bat`** — формирует список всех файлов `lib\*.dart` с количеством строк для быстрой ориентации модели в проекте.
+* **`symbols_map.bat`** — печатает экономную карту классов и методов по всем файлам `lib\*.dart` (`class`, `enum`, `mixin`, `extension`, `void`, `Future<`, `State<`, `Widget` и поля с номерами строк) через PowerShell `Select-String`, чтобы модель видела объявления, не читая файлы целиком.
+* **`fast_check.bat`** — быстрая проверка перед коммитом: `dart format lib`, затем `flutter analyze --no-pub` (без повторного разрешения зависимостей — быстрее и работает офлайн).
+* **`git_diff_summary.bat`** — компактная сводка изменений: короткий `git status -s` плюс `git diff --stat`, чтобы модель понимала, что изменилось, без вываливания полных диффов в контекст.
 
 ## Установка
 
