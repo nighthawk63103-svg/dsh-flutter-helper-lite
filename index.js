@@ -563,7 +563,8 @@ export function apply(ctx, _config) {
       // The plugin sources are deliberately gitignored, so a normal `git add`
       // would skip them. Force-add only the fixed allowlist above.
       const forcePluginFiles = target === 'plugins/flutter-helper' ||
-        PLUGIN_TOOLING_FILES.includes(target);
+        PLUGIN_TOOLING_FILES.includes(target) ||
+        specs.some((spec) => PLUGIN_TOOLING_FILES.includes(spec));
       let add;
       if (forcePluginFiles) {
         add = await runCommand('git', ['add', '-f', '--', ...PLUGIN_TOOLING_FILES], { cwd: repo });
