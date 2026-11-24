@@ -7,14 +7,14 @@
 
 **Current version: `v1.8.0`** (see `package.json` → `"version": "1.8.0"`)
 
-**Lightweight Flutter helper plugin for DeepSeek Harness — bypasses Windows 10 PTY shell crashes and saves context/VRAM for compact local models (4B–8B).**
+**Lightweight Flutter helper plugin for DeepSeek Harness — bypasses Windows 10 PTY shell crashes and works with any OpenAI-compatible model. Local models are optional.**
 
 Repository: https://github.com
 
 ## Why This Plugin?
 
 1. **Bypasses `PTY shell exited during startup` on Windows 10** — runs Flutter, Git, and project `.bat` scripts directly from Node.js (no PTY), avoiding the broken `ConPTY / pwsh` pseudo-terminal.
-2. **Saves VRAM and Context Window** — lets compact local models (`Qwen 4B–8B`) inspect large `.dart` files via a lightweight code outline and run bundled project scripts without flooding the context with long build logs.
+2. **Compact, model-agnostic context** — works with any OpenAI-compatible model; local models are optional. A lightweight code outline and trimmed script output keep tool results focused.
 3. **Code Safety Checkpoints** — built-in Git snapshot and rollback tools protect your project from accidental syntax breaks during AI edits.
 4. **Zero External Dependencies** — uses only built-in Node.js modules (`node:fs`, `node:path`, `node:child_process`), requiring no `npm install` or third-party packages.
 
@@ -52,7 +52,7 @@ Exit code `1` is surfaced by the tool call failing with the same body text the t
 ## Maintenance notes
 
 * **Reloading after a code change** — `index.js` is evaluated when the plugin bundle is registered. After editing `index.js`, toggle the plugin bundle off and on again to re-register the tools: HMR does not pick up new or changed tool definitions.
-* **`check_diff_paths` baseline** — the tool resolves its diff base as `baseRef` → `config.base` → the first matching entry of `config.baseFallback` → the repository's first commit. Here `docs/protected.json` sets `base` to `"main"` (that branch does not exist) and `baseFallback` to `["master"]`, so resolution falls through to `master` and the effective baseline is `master`.
+* **`check_diff_paths` baseline** — `docs/protected.json` is the source of truth for protected paths and the diff-base configuration. The tool resolves its base as `baseRef` → `config.base` → the first existing entry of `config.baseFallback` → the repository's first commit. No branch names are hardcoded in the tool; update `docs/protected.json` when the repository default changes.
 
 ## Recommended Helper Scripts (Optional)
 
@@ -94,14 +94,14 @@ MIT License
 
 **Версия плагина: `v1.8.0`** (см. `package.json` → `"version": "1.8.0"`)
 
-**Облегчённый плагин для разработки на Flutter в DeepSeek Harness — обходит падения терминала на Windows 10 и экономит видеопамять и токены для компактных локальных и облачных моделей.**
+**Облегчённый плагин для разработки на Flutter в DeepSeek Harness — обходит падения терминала на Windows 10 и работает с любой OpenAI-совместимой моделью. Локальные модели опциональны.**
 
 Репозиторий на GitHub: https://github.com
 
 ## Зачем нужен этот плагин?
 
 1. **Обход ошибки `PTY shell exited during startup` на Windows 10** — выполняет команды Flutter, Git и локальные `.bat`-скрипты проекта напрямую из Node.js (без PTY), минуя проблемный псевдотерминал `ConPTY / pwsh`.
-2. **Экономия видеопамяти (VRAM), контекста и токенов** — позволяет моделям изучать структуру больших `.dart`-файлов по оглавлению и запускать пакетные скрипты сборки/проверки с обрезкой длинных логов (последние 4000 символов).
+2. **Компактный контекст без привязки к модели** — плагин работает с любой OpenAI-совместимой моделью; локальные модели опциональны. Оглавление кода и обрезка вывода скриптов сохраняют результаты инструментов сфокусированными.
 3. **Защита от поломки кода** — встроенные точки отката Git позволяют мгновенно восстановить рабочую версию при неудачной правке.
 4. **Ноль внешних зависимостей** — работает исключительно на встроенных модулях Node.js (`node:fs`, `node:path`, `node:child_process`), не требует установки `npm` или сторонних пакетов.
 
@@ -120,7 +120,7 @@ MIT License
 ## Примечания по обслуживанию
 
 * **Перезагрузка после правки кода** — `index.js` читается при регистрации бандла плагина. После правки `index.js` выключите и снова включите бандл, чтобы инструменты перерегистрировались: HMR новые и изменённые определения инструментов не подхватывает.
-* **Базовая точка `check_diff_paths`** — базовый коммит выбирается по порядку: аргумент `baseRef` → `config.base` → первый подходящий элемент `config.baseFallback` → первый коммит репозитория. В `docs/protected.json` заданы `base: "main"` (такой ветки нет) и `baseFallback: ["master"]`, поэтому выбор падает на `master`, и фактическая база — `master`.
+* **Базовая точка `check_diff_paths`** — источником истины для защищённых путей и настройки базы сравнения служит `docs/protected.json`. База выбирается по порядку: аргумент `baseRef` → `config.base` → первый существующий элемент `config.baseFallback` → первый коммит репозитория. Имена веток в инструменте не зашиты; при смене основной ветки обновите `docs/protected.json`.
 
 ## Рекомендуемые `.bat`-скрипты проекта (опционально)
 
