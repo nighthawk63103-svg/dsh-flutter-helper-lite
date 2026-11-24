@@ -37,6 +37,8 @@ const ALLOWED_SCRIPTS = Object.freeze({
   gen_test_skeletons: 'scripts/gen_test_skeletons.bat',
   check_sqlite_isolation: 'scripts/check_sqlite_isolation.bat',
   check_protected_files: 'scripts/check_protected_files.bat',
+  state_snapshot: 'scripts/state_snapshot.bat',
+  test_failures: 'scripts/test_failures.bat',
   gen_docs: 'scripts/gen_docs.bat',
   bump_version: 'scripts/bump_version.bat',
 });
