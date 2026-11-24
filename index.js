@@ -388,6 +388,11 @@ const commitParameters = {
   type: 'object',
   properties: {
     ...optionalFilePathParameters.properties,
+    paths: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Optional repository-relative paths to stage instead of all changes.',
+    },
     message: {
       type: 'string',
       description: 'Optional commit subject; defaults to "checkpoint".',
@@ -526,7 +531,7 @@ export function apply(ctx, _config) {
     description: 'Save all changes to the git repository with the commit message "checkpoint".',
     parameters: commitParameters,
     output: textOutput,
-    execute: async ({ filePath, message } = {}) => {
+    execute: async ({ filePath, message, paths } = {}) => {
       const raw = typeof filePath === 'string' ? filePath.trim() : '';
       const repo = findRoot(raw || undefined, [GIT_DIR]);
       if (!repo) {
@@ -539,6 +544,18 @@ export function apply(ctx, _config) {
         return `Error: ${raw} is outside the git repository ${repo}.`;
       }
 
+      // Optional explicit pathspecs keep a commit scoped to the intended
+      // directories even when unrelated files are untracked.
+      const requested = Array.isArray(paths)
+        ? paths.filter((value) => typeof value === 'string' && value.trim()).map((value) => value.trim())
+        : [];
+      const specs = [];
+      for (const entry of requested) {
+        const relative = repoRelative(entry, repo);
+        if (!relative) return `Error: ${entry} is outside the git repository ${repo}.`;
+        specs.push(relative);
+      }
+
       const commitMessage = typeof message === 'string' && message.trim()
         ? message.trim()
         : 'checkpoint';
@@ -547,9 +564,14 @@ export function apply(ctx, _config) {
       // would skip them. Force-add only the fixed allowlist above.
       const forcePluginFiles = target === 'plugins/flutter-helper' ||
         PLUGIN_TOOLING_FILES.includes(target);
-      const add = forcePluginFiles
-        ? await runCommand('git', ['add', '-f', '--', ...PLUGIN_TOOLING_FILES], { cwd: repo })
-        : await runCommand('git', target ? ['add', '-A', '--', target] : ['add', '-A'], { cwd: repo });
+      let add;
+      if (forcePluginFiles) {
+        add = await runCommand('git', ['add', '-f', '--', ...PLUGIN_TOOLING_FILES], { cwd: repo });
+      } else if (specs.length > 0) {
+        add = await runCommand('git', ['add', '-A', '--', ...specs], { cwd: repo });
+      } else {
+        add = await runCommand('git', target ? ['add', '-A', '--', target] : ['add', '-A'], { cwd: repo });
+      }
       if (!add.ok) return `git add failed in ${repo}.\n${add.output}`;
 
       let commit = await runCommand('git', ['commit', '-m', commitMessage], { cwd: repo });
