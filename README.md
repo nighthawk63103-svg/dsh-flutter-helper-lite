@@ -49,6 +49,11 @@ Paths are resolved from the nearest parent directory containing `pubspec.yaml` (
 
 Exit code `1` is surfaced by the tool call failing with the same body text the tool would otherwise print.
 
+## Maintenance notes
+
+* **Reloading after a code change** — `index.js` is evaluated when the plugin bundle is registered. After editing `index.js`, toggle the plugin bundle off and on again to re-register the tools: HMR does not pick up new or changed tool definitions.
+* **`check_diff_paths` baseline** — the tool resolves its diff base as `baseRef` → `config.base` → the first matching entry of `config.baseFallback` → the repository's first commit. Here `docs/protected.json` sets `base` to `"main"` (that branch does not exist) and `baseFallback` to `["master"]`, so resolution falls through to `master` and the effective baseline is `master`.
+
 ## Recommended Helper Scripts (Optional)
 
 You can place these `.bat` scripts in your Flutter project root so the AI agent can trigger them via `run_script` (or run them yourself with a double click).
@@ -111,6 +116,11 @@ MIT License
 * **`run_script`** — безопасно запускает разрешённые `.bat`-скрипты из корня проекта через `cmd.exe` с закрытым потоком ввода (не зависает на `pause`) и обрезкой вывода до последних 4000 символов. **В `v1.8.0` в белом списке 7 основных скриптов** — `check_and_test.bat`, `build_apk.bat`, `backup_git.bat`, `project_map.bat`, `context_pack.bat`, `autofix.bat`, `release_all.bat` — плюс 3 старых для обратной совместимости (`symbols_map.bat`, `fast_check.bat`, `git_diff_summary.bat`). Любое другое имя файла отклоняется строгим белым списком, поэтому строка от модели никогда не превращается в произвольную команду.
 
 Пути определяются по ближайшей родительской папке с `pubspec.yaml` (инструменты Flutter и скрипты) или `.git` (инструменты Git), поэтому плагин работает независимо от рабочей директории хост-процесса.
+
+## Примечания по обслуживанию
+
+* **Перезагрузка после правки кода** — `index.js` читается при регистрации бандла плагина. После правки `index.js` выключите и снова включите бандл, чтобы инструменты перерегистрировались: HMR новые и изменённые определения инструментов не подхватывает.
+* **Базовая точка `check_diff_paths`** — базовый коммит выбирается по порядку: аргумент `baseRef` → `config.base` → первый подходящий элемент `config.baseFallback` → первый коммит репозитория. В `docs/protected.json` заданы `base: "main"` (такой ветки нет) и `baseFallback: ["master"]`, поэтому выбор падает на `master`, и фактическая база — `master`.
 
 ## Рекомендуемые `.bat`-скрипты проекта (опционально)
 
