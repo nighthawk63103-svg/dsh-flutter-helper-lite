@@ -44,6 +44,11 @@ const ALLOWED_SCRIPTS = Object.freeze({
 // Public names in a stable order for the tool description and error messages.
 const SCRIPT_NAMES = Object.freeze(Object.keys(ALLOWED_SCRIPTS));
 
+// Generator scripts whose .bat understands --dry-run. run_script forwards the
+// optional dryRun flag for these two only, so no other script ever receives an
+// argument it does not parse (an unknown flag makes those scripts exit 1).
+const DRY_RUN_SCRIPTS = Object.freeze(['gen_docs', 'gen_model_parts']);
+
 // v1.8.0: accept a script name with or without the ".bat" suffix. The frozen
 // map above keeps its historical keys (nothing is removed for backward
 // compatibility); aliases only add lookup forms, so "gen_docs" and
@@ -870,12 +875,16 @@ export function apply(ctx, _config) {
           type: 'boolean',
           description: 'When true, keep only the last 5 lines of stdout instead of the default tail.',
         },
+        dryRun: {
+          type: 'boolean',
+          description: 'When true, forward --dry-run to gen_docs or gen_model_parts; other scripts reject it.',
+        },
       },
       required: ['scriptName'],
       additionalProperties: false,
     },
     output: textOutput,
-    execute: async ({ scriptName, compact } = {}) => {
+    execute: async ({ scriptName, compact, dryRun } = {}) => {
       const raw = typeof scriptName === 'string' ? scriptName.trim() : '';
       if (!raw) {
         return `Error: scriptName is required. Allowed: ${SCRIPT_NAMES.join(', ')}.`;
@@ -886,6 +895,16 @@ export function apply(ctx, _config) {
       const canonical = resolveScriptName(raw);
       if (!canonical) {
         return `Error: "${raw}" is not an allowed script. Allowed: ${SCRIPT_NAMES.join(', ')}.`;
+      }
+
+      // Optional generator dry-run. Only the two scripts that document the
+      // flag get it; anything else would exit 1 on an unknown argument.
+      const extraArgs = [];
+      if (dryRun === true) {
+        if (!DRY_RUN_SCRIPTS.includes(canonical)) {
+          return `Error: dryRun is only supported for: ${DRY_RUN_SCRIPTS.join(', ')}.`;
+        }
+        extraArgs.push('--dry-run');
       }
 
       const root = findRoot(undefined, [PUBSPEC]);
@@ -903,7 +922,7 @@ export function apply(ctx, _config) {
       // reaches the command line. cmd.exe resolves the absolute path directly.
       const run = await runProcess(
         process.env.ComSpec || 'cmd.exe',
-        ['/d', '/c', scriptPath],
+        ['/d', '/c', scriptPath, ...extraArgs],
         {
           cwd: root,
           env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
