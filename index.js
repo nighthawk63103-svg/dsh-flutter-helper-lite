@@ -44,6 +44,31 @@ const ALLOWED_SCRIPTS = Object.freeze({
 // Public names in a stable order for the tool description and error messages.
 const SCRIPT_NAMES = Object.freeze(Object.keys(ALLOWED_SCRIPTS));
 
+// v1.8.0: accept a script name with or without the ".bat" suffix. The frozen
+// map above keeps its historical keys (nothing is removed for backward
+// compatibility); aliases only add lookup forms, so "gen_docs" and
+// "gen_docs.bat" both resolve to the same canonical allowlist entry.
+const SCRIPT_ALIASES = (() => {
+  const map = new Map();
+  for (const name of SCRIPT_NAMES) {
+    const bare = name.replace(/\.bat$/i, '');
+    map.set(name, name);
+    map.set(bare, name);
+    map.set(`${bare}.bat`, name);
+  }
+  return map;
+})();
+
+const ACCEPTED_SCRIPT_NAMES = Object.freeze([...SCRIPT_ALIASES.keys()]);
+
+// Resolve any accepted spelling to its canonical allowlist key, or null.
+function resolveScriptName(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return null;
+  if (SCRIPT_ALIASES.has(raw)) return SCRIPT_ALIASES.get(raw);
+  return SCRIPT_ALIASES.get(raw.toLowerCase()) || null;
+}
+
 // The project .gitignore excludes plugins/, so the two plugin sources that make
 // up this tooling bundle need an explicit forced add when committing them.
 // This is a fixed list: no other file (notably .env) can be force-added.
@@ -344,6 +369,86 @@ async function runCommand(command, args = [], options = {}) {
   };
 
   return runProcess(file, spawnArgs, { cwd, env: spawnEnv, timeout, verbatim });
+}
+
+// ---------------------------------------------------------------------------
+// Security and summary gates (v1.8.0)
+// ---------------------------------------------------------------------------
+
+// Patterns the root .gitignore must keep ignoring. Mirrors the policy recorded
+// in docs/decisions/ADR-0001-keystore.md.
+const REQUIRED_GITIGNORE_PATTERNS = Object.freeze([
+  '*.jks',
+  '*.keystore',
+  'key.properties',
+  '.dart_tool/',
+  'build/',
+]);
+
+// Path patterns that must never appear in git history.
+const DEFAULT_SECRET_PATTERNS = Object.freeze([
+  '*.jks',
+  '*.keystore',
+  'key.properties',
+  'upload-keystore.jks',
+]);
+
+// A gate tool reports failure the way a command reports a non-zero exit: the
+// body stays exactly the documented text, but the call is surfaced as failed.
+function gateResult(text, failed) {
+  if (failed) throw new Error(text);
+  return text;
+}
+
+// Compare .gitignore lines without care for trailing slashes or Windows
+// separators, so "build/" and "build" both satisfy the "build/" requirement.
+function normalizeIgnoreLine(line) {
+  return String(line ?? '')
+    .replace(/\uFEFF/g, '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '');
+}
+
+// Match one history path against a simple pattern: "*.ext" is a suffix test,
+// anything else is a full-path or basename test.
+function matchesPathPattern(file, pattern) {
+  const wanted = String(pattern ?? '').trim();
+  if (!wanted) return false;
+  const name = path.posix.basename(file);
+  if (wanted.startsWith('*')) {
+    return name.toLowerCase().endsWith(wanted.slice(1).toLowerCase());
+  }
+  return file === wanted || name === wanted;
+}
+
+function firstLines(value, limit) {
+  return String(value ?? '').split(/\r?\n/).filter((line) => line.trim()).slice(0, limit);
+}
+
+function lastLines(value, limit) {
+  return String(value ?? '').split(/\r?\n/).filter((line) => line.trim()).slice(-limit);
+}
+
+// Pick the diff base: explicit baseRef, then config.base, then each
+// baseFallback entry, then the repository's first commit.
+async function resolveBaseCommit(cwd, config, baseRef) {
+  const fallbacks = Array.isArray(config?.baseFallback) ? config.baseFallback : [];
+  const candidates = [baseRef, config?.base, ...fallbacks]
+    .filter((value) => typeof value === 'string' && value.trim())
+    .map((value) => value.trim());
+
+  for (const candidate of candidates) {
+    const verify = await runCommand('git', ['rev-parse', '--verify', '--quiet', candidate], { cwd });
+    if (!verify.ok) continue;
+    const resolved = lastLines(verify.output, 1)[0];
+    if (resolved) return resolved;
+  }
+
+  const roots = await runCommand('git', ['rev-list', '--max-parents=0', 'HEAD'], { cwd });
+  if (!roots.ok) return null;
+  const first = String(roots.output).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return first.length > 0 ? first[first.length - 1] : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -752,28 +857,34 @@ export function apply(ctx, _config) {
   // against a strict allowlist, so this can never become arbitrary execution.
   ctx.tools.register({
     name: 'run_script',
-    description: 'Run an allowlisted project helper .bat script from the Flutter project root and return the tail of its output.',
+    description: 'Run an allowlisted project helper .bat script from the Flutter project root and return the tail of its output. Script names are accepted with or without the ".bat" suffix.',
     parameters: {
       type: 'object',
       properties: {
         scriptName: {
           type: 'string',
-          description: `Exact script name, one of: ${SCRIPT_NAMES.join(', ')}`,
-          enum: [...SCRIPT_NAMES],
+          description: `Exact script name, one of: ${SCRIPT_NAMES.join(', ')} (the ".bat" suffix is optional)`,
+          enum: [...ACCEPTED_SCRIPT_NAMES],
+        },
+        compact: {
+          type: 'boolean',
+          description: 'When true, keep only the last 5 lines of stdout instead of the default tail.',
         },
       },
       required: ['scriptName'],
       additionalProperties: false,
     },
     output: textOutput,
-    execute: async ({ scriptName } = {}) => {
+    execute: async ({ scriptName, compact } = {}) => {
       const raw = typeof scriptName === 'string' ? scriptName.trim() : '';
       if (!raw) {
         return `Error: scriptName is required. Allowed: ${SCRIPT_NAMES.join(', ')}.`;
       }
 
-      // Exact, case-sensitive own-property check against the frozen allowlist.
-      if (!Object.prototype.hasOwnProperty.call(ALLOWED_SCRIPTS, raw)) {
+      // Resolve the historical name and the optional ".bat" alias to exactly
+      // one canonical allowlist key. No model-supplied text reaches the path.
+      const canonical = resolveScriptName(raw);
+      if (!canonical) {
         return `Error: "${raw}" is not an allowed script. Allowed: ${SCRIPT_NAMES.join(', ')}.`;
       }
 
@@ -782,7 +893,7 @@ export function apply(ctx, _config) {
         return 'Error: no pubspec.yaml found upwards from the current directory.';
       }
 
-      const relativeScript = ALLOWED_SCRIPTS[raw];
+      const relativeScript = ALLOWED_SCRIPTS[canonical];
       const scriptPath = path.join(root, relativeScript);
       if (!isFile(scriptPath)) {
         return `Error: script not found: ${displayPath(scriptPath, root)} (project root: ${root}).`;
@@ -800,11 +911,271 @@ export function apply(ctx, _config) {
         },
       );
 
-      const body = tailText(run.output);
+      const body = compact === true
+        ? (lastLines(run.output, 5).join('\n') || '(no output)')
+        : tailText(run.output);
       if (!run.ok) {
-        return `Script ${raw} failed in ${root}.\n\n${body}`;
+        return `Script ${canonical} failed in ${root}.\n\n${body}`;
       }
-      return `Script ${raw} finished in ${root}.\n\n${body}`;
+      return `Script ${canonical} finished in ${root}.\n\n${body}`;
+    },
+  });
+
+  // --- v1.8.0 gates -------------------------------------------------------
+
+  // Verify that the root .gitignore still hides signing secrets and build
+  // output. Five required patterns, at most five MISSING lines.
+  ctx.tools.register({
+    name: 'check_gitignore',
+    description: 'Verify the repository .gitignore still ignores signing secrets and build output.',
+    parameters: {
+      type: 'object',
+      properties: {
+        gitignorePath: {
+          type: 'string',
+          description: 'Optional path to a .gitignore file or to the project root; defaults to the Flutter project root',
+        },
+      },
+      additionalProperties: false,
+    },
+    output: textOutput,
+    execute: async ({ gitignorePath } = {}) => {
+      const raw = typeof gitignorePath === 'string' ? gitignorePath.trim() : '';
+      // The plugin can be installed from inside the project (plugins/<name>),
+      // so anchor on pubspec.yaml first: that is the app root, not the nested
+      // plugin repository, and the required patterns belong to the app root.
+      const root = findRoot(raw || undefined, [PUBSPEC]) || process.cwd();
+      let file = path.resolve(root, raw || '.gitignore');
+      if (raw && fs.existsSync(file) && !isFile(file)) file = path.join(file, '.gitignore');
+
+      let lines = [];
+      if (isFile(file)) {
+        try {
+          lines = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/);
+        } catch (error) {
+          throw new Error(`Error: cannot read ${displayPath(file, root)}: ${error.message}`);
+        }
+      }
+
+      const present = new Set(lines.map(normalizeIgnoreLine));
+      const missing = REQUIRED_GITIGNORE_PATTERNS.filter((pattern) => !present.has(normalizeIgnoreLine(pattern)));
+      return gateResult(
+        missing.length === 0
+          ? 'OK'
+          : firstLines(missing.map((pattern) => `MISSING: ${pattern}`), 5).join('\n'),
+        missing.length > 0,
+      );
+    },
+  });
+
+  // Check that a diff against the configured base never touches protected
+  // Flutter screens. The base comes from docs/protected.json with a fallback.
+  ctx.tools.register({
+    name: 'check_diff_paths',
+    description: 'Check that the current diff against the configured base does not touch protected files.',
+    parameters: {
+      type: 'object',
+      properties: {
+        configPath: {
+          type: 'string',
+          description: 'Optional path to the protected-paths config; defaults to docs/protected.json',
+        },
+        baseRef: {
+          type: 'string',
+          description: 'Optional git ref to diff against; defaults to the configured base',
+        },
+      },
+      additionalProperties: false,
+    },
+    output: textOutput,
+    execute: async ({ configPath, baseRef } = {}) => {
+      const rawBase = typeof baseRef === 'string' ? baseRef.trim() : '';
+      // Prefer the app root (pubspec.yaml) over the nested plugin repository:
+      // from plugins/<name> the nearest .git is the plugin's own repo.
+      const repo = findRoot(undefined, [PUBSPEC]) || findRoot(undefined, [GIT_DIR]);
+      if (!repo) return 'Error: no .git directory found upwards from the current directory.';
+
+      const configFile = typeof configPath === 'string' && configPath.trim()
+        ? path.resolve(repo, configPath.trim())
+        : path.join(repo, 'docs', 'protected.json');
+
+      let config;
+      try {
+        config = JSON.parse(fs.readFileSync(configFile, 'utf8').replace(/^\uFEFF/, ''));
+      } catch (error) {
+        throw new Error(`Error: cannot read ${displayPath(configFile, repo)}: ${error.message}`);
+      }
+
+      const protectedPaths = Array.isArray(config?.protected)
+        ? config.protected
+          .filter((value) => typeof value === 'string' && value.trim())
+          .map((value) => value.trim().replace(/\\/g, '/').replace(/^\.\//, ''))
+        : [];
+      if (protectedPaths.length === 0) {
+        throw new Error(`Error: no protected paths declared in ${displayPath(configFile, repo)}.`);
+      }
+
+      const base = await resolveBaseCommit(repo, config, rawBase);
+      if (!base) throw new Error('Error: could not resolve a git base commit to diff against.');
+
+      const diff = await runCommand(
+        'git',
+        ['-c', 'core.quotepath=false', 'diff', '--name-only', `${base}..HEAD`],
+        { cwd: repo },
+      );
+      if (!diff.ok) throw new Error(`Error: git diff against ${base} failed.\n${lastLines(diff.output, 5).join('\n')}`);
+
+      const touched = String(diff.output)
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter((file) => protectedPaths.some((p) => file === p || file.startsWith(`${p}/`)));
+
+      return gateResult(
+        touched.length === 0 ? 'OK' : firstLines(touched.map((file) => `TOUCHED: ${file}`), 3).join('\n'),
+        touched.length > 0,
+      );
+    },
+  });
+
+  // Reduce the full flutter test log to one compact summary line.
+  ctx.tools.register({
+    name: 'flutter_test_summary',
+    description: 'Run flutter test and report only "Passed: N, Failed: M, Skipped: K".',
+    parameters: noParameters,
+    output: textOutput,
+    execute: async () => {
+      const root = findRoot(undefined, [PUBSPEC]);
+      if (!root) return 'Error: no pubspec.yaml found upwards from the current directory.';
+
+      const run = await runCommand('flutter', ['test', '--reporter', 'compact'], {
+        cwd: root,
+        timeout: 30 * 60 * 1000,
+      });
+
+      // The compact reporter rewrites one line with carriage returns, so split
+      // on both CR and LF before looking for the newest progress line.
+      const progress = String(run.output)
+        .split(/\r\n|\r|\n/)
+        .map((line) => line.trim())
+        .filter((line) => /^\d+:\d+\s/.test(line) && /\+\d+/.test(line));
+      const summary = progress.length > 0 ? progress[progress.length - 1] : '';
+      const counts = /\+(\d+)(?:\s+-(\d+))?(?:\s+~(\d+))?/.exec(summary);
+      if (!counts) {
+        throw new Error('Error: could not parse the flutter test compact reporter output.');
+      }
+
+      const passed = Number(counts[1] || 0);
+      const failed = Number(counts[2] || 0);
+      const skipped = Number(counts[3] || 0);
+      return gateResult(`Passed: ${passed}, Failed: ${failed}, Skipped: ${skipped}`, failed > 0 || !run.ok);
+    },
+  });
+
+  // Bump the app version by delegating to the project script. No versioning
+  // logic lives in the plugin.
+  ctx.tools.register({
+    name: 'version_bump',
+    description: 'Run the project version bump script for major, minor or patch.',
+    parameters: {
+      type: 'object',
+      properties: {
+        arg: {
+          type: 'string',
+          description: 'Which version component to bump',
+          enum: ['major', 'minor', 'patch'],
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'Forward --dry-run to the project script when it supports it',
+        },
+      },
+      required: ['arg'],
+      additionalProperties: false,
+    },
+    output: textOutput,
+    execute: async ({ arg, dryRun } = {}) => {
+      const value = typeof arg === 'string' ? arg.trim().toLowerCase() : '';
+      if (!['major', 'minor', 'patch'].includes(value)) {
+        throw new Error('Error: arg must be one of major, minor, patch.');
+      }
+
+      const root = findRoot(undefined, [PUBSPEC]);
+      if (!root) return 'Error: no pubspec.yaml found upwards from the current directory.';
+
+      const scriptPath = path.join(root, 'scripts', 'bump_version.bat');
+      if (!isFile(scriptPath)) {
+        return `Error: script not found: ${displayPath(scriptPath, root)}.`;
+      }
+
+      const args = ['/d', '/c', scriptPath, value];
+      if (dryRun === true) args.push('--dry-run');
+
+      const run = await runProcess(
+        process.env.ComSpec || 'cmd.exe',
+        args,
+        { cwd: root, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, timeout: DEFAULT_TIMEOUT_MS },
+      );
+
+      const body = lastLines(run.output, 5).join('\n') || '(no output)';
+      return `${body}\nExit code: ${run.ok ? 0 : 1}`;
+    },
+  });
+
+  // Scan all refs for secret filenames that were ever committed.
+  ctx.tools.register({
+    name: 'git_secret_scan',
+    description: 'Scan git history for committed signing secrets and report where they first appeared.',
+    parameters: {
+      type: 'object',
+      properties: {
+        patterns: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional path patterns; defaults to *.jks, *.keystore, key.properties, upload-keystore.jks',
+        },
+      },
+      additionalProperties: false,
+    },
+    output: textOutput,
+    execute: async ({ patterns } = {}) => {
+      const repo = findRoot(undefined, [PUBSPEC]) || findRoot(undefined, [GIT_DIR]);
+      if (!repo) return 'Error: no .git directory found upwards from the current directory.';
+
+      const wanted = (Array.isArray(patterns) ? patterns : [])
+        .filter((value) => typeof value === 'string' && value.trim())
+        .map((value) => value.trim());
+      const active = wanted.length > 0 ? wanted : [...DEFAULT_SECRET_PATTERNS];
+
+      const scan = await runCommand(
+        'git',
+        ['log', '--all', '--full-history', '--name-only', '--pretty=format:%H'],
+        { cwd: repo, timeout: 10 * 60 * 1000 },
+      );
+      if (!scan.ok) throw new Error(`Error: git log scan failed.\n${lastLines(scan.output, 5).join('\n')}`);
+
+      // Walk newest to oldest and keep overwriting, so the stored hash ends up
+      // being the oldest commit that contains the path (its first appearance).
+      const firstSeen = new Map();
+      let current = '';
+      for (const line of String(scan.output).split(/\r?\n/)) {
+        const text = line.trim();
+        if (!text) continue;
+        if (/^[0-9a-f]{40}$/i.test(text)) {
+          current = text;
+          continue;
+        }
+        if (current) firstSeen.set(text, current);
+      }
+
+      const hits = [...firstSeen.entries()]
+        .filter(([file]) => active.some((pattern) => matchesPathPattern(file, pattern)))
+        .map(([file, hash]) => `HISTORY: ${file} (first seen in ${hash.slice(0, 7)})`);
+
+      return gateResult(
+        hits.length === 0 ? 'CLEAN' : firstLines(hits, 5).join('\n'),
+        hits.length > 0,
+      );
     },
   });
 
