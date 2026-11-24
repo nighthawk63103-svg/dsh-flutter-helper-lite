@@ -16,19 +16,40 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const BUILD_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 
-// Strict allowlist for the run_script tool. Only these exact file names may be
-// executed, so a model-supplied string can never become an arbitrary command.
-const ALLOWED_SCRIPTS = Object.freeze([
-  'check_and_test.bat',
-  'build_apk.bat',
-  'backup_git.bat',
-  'project_map.bat',
-  'symbols_map.bat',
-  'fast_check.bat',
-  'git_diff_summary.bat',
-  'context_pack.bat',
-  'autofix.bat',
-  'release_all.bat',
+// Strict allowlist for the run_script tool. A map of public script name to the
+// project-relative file path, so a model-supplied string can never become an
+// arbitrary command. Existing root-level scripts keep their exact names; the
+// phase 0A tooling lives under scripts/.
+const ALLOWED_SCRIPTS = Object.freeze({
+  'check_and_test.bat': 'check_and_test.bat',
+  'build_apk.bat': 'build_apk.bat',
+  'backup_git.bat': 'backup_git.bat',
+  'project_map.bat': 'project_map.bat',
+  'symbols_map.bat': 'symbols_map.bat',
+  'fast_check.bat': 'fast_check.bat',
+  'git_diff_summary.bat': 'git_diff_summary.bat',
+  'context_pack.bat': 'context_pack.bat',
+  'autofix.bat': 'autofix.bat',
+  'release_all.bat': 'release_all.bat',
+  spec_tracker: 'scripts/spec_tracker.bat',
+  gen_model_parts: 'scripts/gen_model_parts.bat',
+  gen_service_stub: 'scripts/gen_service_stub.bat',
+  gen_test_skeletons: 'scripts/gen_test_skeletons.bat',
+  check_sqlite_isolation: 'scripts/check_sqlite_isolation.bat',
+  check_protected_files: 'scripts/check_protected_files.bat',
+  gen_docs: 'scripts/gen_docs.bat',
+  bump_version: 'scripts/bump_version.bat',
+});
+
+// Public names in a stable order for the tool description and error messages.
+const SCRIPT_NAMES = Object.freeze(Object.keys(ALLOWED_SCRIPTS));
+
+// The project .gitignore excludes plugins/, so the two plugin sources that make
+// up this tooling bundle need an explicit forced add when committing them.
+// This is a fixed list: no other file (notably .env) can be force-added.
+const PLUGIN_TOOLING_FILES = Object.freeze([
+  'plugins/flutter-helper/index.js',
+  'plugins/flutter-helper/package.json',
 ]);
 
 // Keep tool output tiny: model context is far more expensive than log loss.
@@ -361,6 +382,20 @@ const optionalFilePathParameters = {
   additionalProperties: false,
 };
 
+// git_save additionally accepts an explicit commit subject. Keeping it
+// optional preserves the historical "checkpoint" behaviour.
+const commitParameters = {
+  type: 'object',
+  properties: {
+    ...optionalFilePathParameters.properties,
+    message: {
+      type: 'string',
+      description: 'Optional commit subject; defaults to "checkpoint".',
+    },
+  },
+  additionalProperties: false,
+};
+
 const noParameters = {
   type: 'object',
   properties: {},
@@ -489,9 +524,9 @@ export function apply(ctx, _config) {
   ctx.tools.register({
     name: 'git_save',
     description: 'Save all changes to the git repository with the commit message "checkpoint".',
-    parameters: optionalFilePathParameters,
+    parameters: commitParameters,
     output: textOutput,
-    execute: async ({ filePath } = {}) => {
+    execute: async ({ filePath, message } = {}) => {
       const raw = typeof filePath === 'string' ? filePath.trim() : '';
       const repo = findRoot(raw || undefined, [GIT_DIR]);
       if (!repo) {
@@ -504,17 +539,27 @@ export function apply(ctx, _config) {
         return `Error: ${raw} is outside the git repository ${repo}.`;
       }
 
-      const add = await runCommand('git', target ? ['add', '-A', '--', target] : ['add', '-A'], { cwd: repo });
+      const commitMessage = typeof message === 'string' && message.trim()
+        ? message.trim()
+        : 'checkpoint';
+
+      // The plugin sources are deliberately gitignored, so a normal `git add`
+      // would skip them. Force-add only the fixed allowlist above.
+      const forcePluginFiles = target === 'plugins/flutter-helper' ||
+        PLUGIN_TOOLING_FILES.includes(target);
+      const add = forcePluginFiles
+        ? await runCommand('git', ['add', '-f', '--', ...PLUGIN_TOOLING_FILES], { cwd: repo })
+        : await runCommand('git', target ? ['add', '-A', '--', target] : ['add', '-A'], { cwd: repo });
       if (!add.ok) return `git add failed in ${repo}.\n${add.output}`;
 
-      let commit = await runCommand('git', ['commit', '-m', 'checkpoint'], { cwd: repo });
+      let commit = await runCommand('git', ['commit', '-m', commitMessage], { cwd: repo });
       if (!commit.ok && /author identity unknown|tell me who you are|unable to auto-detect email|empty ident/i.test(commit.output)) {
         // A fresh machine often has no user.name/user.email configured; use a
         // local fallback for this single commit instead of failing the tool.
         commit = await runCommand('git', [
           '-c', 'user.name=flutter-helper',
           '-c', 'user.email=flutter-helper@localhost',
-          'commit', '-m', 'checkpoint',
+          'commit', '-m', commitMessage,
         ], { cwd: repo });
       }
 
@@ -690,8 +735,8 @@ export function apply(ctx, _config) {
       properties: {
         scriptName: {
           type: 'string',
-          description: 'Exact script file name, one of: check_and_test.bat, build_apk.bat, backup_git.bat, project_map.bat, symbols_map.bat, fast_check.bat, git_diff_summary.bat, context_pack.bat, autofix.bat, release_all.bat',
-          enum: [...ALLOWED_SCRIPTS],
+          description: `Exact script name, one of: ${SCRIPT_NAMES.join(', ')}`,
+          enum: [...SCRIPT_NAMES],
         },
       },
       required: ['scriptName'],
@@ -701,12 +746,12 @@ export function apply(ctx, _config) {
     execute: async ({ scriptName } = {}) => {
       const raw = typeof scriptName === 'string' ? scriptName.trim() : '';
       if (!raw) {
-        return `Error: scriptName is required. Allowed: ${ALLOWED_SCRIPTS.join(', ')}.`;
+        return `Error: scriptName is required. Allowed: ${SCRIPT_NAMES.join(', ')}.`;
       }
 
-      // Exact, case-sensitive membership check against the frozen allowlist.
-      if (!ALLOWED_SCRIPTS.includes(raw)) {
-        return `Error: "${raw}" is not an allowed script. Allowed: ${ALLOWED_SCRIPTS.join(', ')}.`;
+      // Exact, case-sensitive own-property check against the frozen allowlist.
+      if (!Object.prototype.hasOwnProperty.call(ALLOWED_SCRIPTS, raw)) {
+        return `Error: "${raw}" is not an allowed script. Allowed: ${SCRIPT_NAMES.join(', ')}.`;
       }
 
       const root = findRoot(undefined, [PUBSPEC]);
@@ -714,16 +759,17 @@ export function apply(ctx, _config) {
         return 'Error: no pubspec.yaml found upwards from the current directory.';
       }
 
-      const scriptPath = path.join(root, raw);
+      const relativeScript = ALLOWED_SCRIPTS[raw];
+      const scriptPath = path.join(root, relativeScript);
       if (!isFile(scriptPath)) {
         return `Error: script not found: ${displayPath(scriptPath, root)} (project root: ${root}).`;
       }
 
-      // cmd.exe resolves the bare, allowlisted file name against the child cwd,
-      // so no user-controlled path ever reaches the command line.
+      // The map value is a constant relative path; no model-supplied text ever
+      // reaches the command line. cmd.exe resolves the absolute path directly.
       const run = await runProcess(
         process.env.ComSpec || 'cmd.exe',
-        ['/d', '/c', raw],
+        ['/d', '/c', scriptPath],
         {
           cwd: root,
           env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
